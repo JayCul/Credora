@@ -22,19 +22,22 @@ function loadDeployment(networkName) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
+/// Reads from public/abi/ReceiptLedger.json, not the raw Hardhat artifacts/ output.
+/// That file is committed to git and kept in sync by scripts/syncAbi.js (run
+/// automatically at the end of scripts/deploy.js), while artifacts/ is gitignored
+/// build output that only exists on a machine that's run "npx hardhat compile" —
+/// which a plain "npm install" deploy (Render's build command) never does. Reading
+/// artifacts/ directly worked locally and broke the first time this ran somewhere
+/// that only ever installed dependencies, never compiled the contract.
 function loadAbi() {
-  const artifactPath = path.join(
-    __dirname,
-    "..",
-    "artifacts",
-    "contracts",
-    "ReceiptLedger.sol",
-    "ReceiptLedger.json"
-  );
-  if (!fs.existsSync(artifactPath)) {
-    throw new Error(`Contract not compiled — run "npx hardhat compile" first (looked in ${artifactPath}).`);
+  const abiPath = path.join(__dirname, "..", "public", "abi", "ReceiptLedger.json");
+  if (!fs.existsSync(abiPath)) {
+    throw new Error(
+      `ABI file not found at ${abiPath}. Run "npx hardhat compile" then "npm run sync-abi" ` +
+        `(or "npm run deploy", which does both) to generate it.`
+    );
   }
-  return JSON.parse(fs.readFileSync(artifactPath, "utf8")).abi;
+  return JSON.parse(fs.readFileSync(abiPath, "utf8"));
 }
 
 /// Best-effort decode of a Solidity custom error into a message a merchant can read
