@@ -1,0 +1,12 @@
+node_modules/
+.env
+cache/
+artifacts/
+typechain-types/
+auth_info_baileys/
+*.log
+
+# Local merchant registry + receipt details (business names, buyer names, item
+# descriptions from real WhatsApp use) — self-reported and off-chain by design,
+# never meant to be committed to a public repo.
+data/

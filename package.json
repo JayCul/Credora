@@ -1,0 +1,46 @@
+{
+  "name": "credora",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "deploy": "hardhat run scripts/deploy.js --network botchain",
+    "deploy:testnet": "hardhat run scripts/deploy.js --network botchainTestnet",
+    "agent": "node agent/whatsapp.js",
+    "dashboard": "node server.js",
+    "seed": "hardhat run scripts/seedDemoData.js --network botchain",
+    "seed:testnet": "hardhat run scripts/seedDemoData.js --network botchainTestnet",
+    "test": "hardhat test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
+    "express": "^5.2.1",
+    "groq-sdk": "^1.5.0",
+    "ngrok": "^5.0.0-beta.2",
+    "pdfkit": "^0.19.1",
+    "pino": "^10.3.1",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "allowScripts": {
+    "@whiskeysockets/baileys@7.0.0-rc14": true,
+    "ngrok@5.0.0-beta.2": true,
+    "protobufjs@7.6.5": true,
+    "esbuild@0.28.2": true,
+    "keccak@3.0.4": true,
+    "secp256k1@4.0.5": true
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.1.0",
+    "hardhat": "^2.29.0"
+  }
+}
