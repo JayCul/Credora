@@ -543,15 +543,15 @@ async function resolveBuyerConfirmation(sock, contractClient, store, buyerJid, t
   if (isConfirmation(text)) {
     clearTimeout(timer);
     pendingBuyerConfirmation.delete(buyerJid);
-    await buyerReply("Thanks for confirming! This helps build their credit history.");
-    await submitReceipt(sock, merchantJid, merchantReply, contractClient, store, merchantHash, merchant, record, buyerPhone);
+    await buyerReply("Thanks for confirming! I'll send you a copy of the receipt in a moment.");
+    await submitReceipt(sock, merchantJid, merchantReply, contractClient, store, merchantHash, merchant, record, buyerPhone, [buyerJid]);
     return;
   }
 
   if (isCancellation(text) || /^no\b/i.test(text.trim())) {
     clearTimeout(timer);
     pendingBuyerConfirmation.delete(buyerJid);
-    await buyerReply("Got it, thanks for letting us know.");
+    await buyerReply("Got it, thanks for letting us know. Nothing was recorded on this one.");
     await merchantReply("Your buyer said this sale wasn't right, so I didn't record it. Double check the details and try again if needed.");
     return;
   }
@@ -559,7 +559,7 @@ async function resolveBuyerConfirmation(sock, contractClient, store, buyerJid, t
   await buyerReply('Sorry, I didn\'t understand. Reply YES to confirm this sale happened, or NO if it isn\'t right.');
 }
 
-async function submitReceipt(sock, jid, reply, contractClient, store, merchantHash, merchant, record, confirmedBuyerPhone) {
+async function submitReceipt(sock, jid, reply, contractClient, store, merchantHash, merchant, record, confirmedBuyerPhone, extraPdfRecipients = []) {
   await reply("Recording on-chain… ⛓️");
   const submitRecord = confirmedBuyerPhone ? { ...record, buyerPhone: confirmedBuyerPhone } : record;
 
@@ -631,6 +631,21 @@ async function submitReceipt(sock, jid, reply, contractClient, store, merchantHa
       mimetype: "application/pdf",
       fileName: `Credora-Receipt-${result.receiptId}.pdf`,
     });
+
+    // Buyer gets their own copy too, when this sale came through the confirmation
+    // flow, since they're a party to the transaction, not just an approver of it.
+    for (const extraJid of extraPdfRecipients) {
+      if (extraJid === jid) continue;
+      try {
+        await sock.sendMessage(extraJid, {
+          document: pdfBuffer,
+          mimetype: "application/pdf",
+          fileName: `Credora-Receipt-${result.receiptId}.pdf`,
+        });
+      } catch (extraErr) {
+        console.error(`Could not send receipt copy to ${extraJid} (receipt is already recorded, this is cosmetic):`, extraErr);
+      }
+    }
   } catch (pdfErr) {
     console.error("PDF generation/send failed (receipt is already recorded on-chain, this is cosmetic):", pdfErr);
   }
