@@ -188,6 +188,37 @@
     margin-bottom: 6px;
   }
 
+  /* ---------- Help popup (WhatsApp number) ---------- */
+  .help-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(16,24,40,.35);
+    z-index: 50; align-items: center; justify-content: center; padding: 20px;
+  }
+  .help-overlay.open { display: flex; }
+  .help-modal {
+    width: 380px; max-width: 92vw; background: #fff; border-radius: var(--radius-lg);
+    box-shadow: 0 8px 30px rgba(16,24,40,.2); padding: 26px; text-align: center;
+  }
+  .help-modal .icon-badge-lg {
+    width: 52px; height: 52px; border-radius: 14px; background: var(--brand-tint);
+    display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto 14px;
+  }
+  .help-modal h3 { margin: 0 0 8px; font-size: 16px; font-weight: 800; }
+  .help-modal p { margin: 0 0 16px; font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .help-modal .wa-number {
+    display: block; background: var(--brand-tint); color: var(--brand-dark); border-radius: 10px;
+    padding: 10px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 15px; font-weight: 800;
+    margin-bottom: 14px; letter-spacing: .02em;
+  }
+  .help-modal .wa-link {
+    display: inline-block; background: var(--brand); color: #fff; text-decoration: none;
+    font-size: 13px; font-weight: 700; padding: 10px 18px; border-radius: 999px; margin-bottom: 12px;
+  }
+  .help-modal .wa-link:hover { background: var(--brand-dark); }
+  .help-modal .close-text-btn {
+    display: block; margin: 4px auto 0; background: none; border: none; color: var(--muted);
+    font-size: 12.5px; cursor: pointer; text-decoration: underline; padding: 4px;
+  }
+
   /* ---------- Detail drawer ---------- */
   .overlay {
     display: none; position: fixed; inset: 0; background: rgba(16,24,40,.35);
@@ -319,6 +350,7 @@
         <input id="searchInput" type="text" placeholder="Search by business name or Credora ID" spellcheck="false" />
       </div>
       <span class="pill" id="networkPill"><span class="dot"></span>Loading</span>
+      <button class="icon-btn" id="helpBtn" title="How to reach the WhatsApp agent">❓</button>
       <button class="icon-btn" id="refreshBtn" title="Refresh">⟳</button>
     </div>
 
@@ -456,6 +488,17 @@
 
     </div>
   </main>
+</div>
+
+<div class="help-overlay" id="helpOverlay">
+  <div class="help-modal">
+    <div class="icon-badge-lg">💬</div>
+    <h3>Try Credora on WhatsApp</h3>
+    <p>This dashboard is read-only. To onboard a business, log a sale or expense, or get a Credora ID, message the live agent directly:</p>
+    <span class="wa-number">+234 704 127 4446</span>
+    <a class="wa-link" id="helpWaLink" href="https://wa.me/2347041274446" target="_blank" rel="noopener">Message on WhatsApp →</a>
+    <button class="close-text-btn" id="helpCloseBtn">Got it, don't show this again</button>
+  </div>
 </div>
 
 <div class="overlay" id="overlay">
@@ -980,6 +1023,23 @@
 
   $("closeDrawer").addEventListener("click", () => $("overlay").classList.remove("open"));
   $("overlay").addEventListener("click", (e) => { if (e.target.id === "overlay") $("overlay").classList.remove("open"); });
+
+  // Points visitors at the live WhatsApp agent, since this dashboard itself is
+  // read-only and can't onboard a business or record a sale. Shown once
+  // automatically on a first visit (per browser, via localStorage), and reopenable
+  // anytime from the ❓ button in the topbar.
+  const HELP_SEEN_KEY = "credora_help_seen";
+  function openHelp() { $("helpOverlay").classList.add("open"); }
+  function closeHelp() { $("helpOverlay").classList.remove("open"); }
+  $("helpBtn").addEventListener("click", openHelp);
+  $("helpCloseBtn").addEventListener("click", () => {
+    closeHelp();
+    try { localStorage.setItem(HELP_SEEN_KEY, "1"); } catch {}
+  });
+  $("helpOverlay").addEventListener("click", (e) => { if (e.target.id === "helpOverlay") closeHelp(); });
+  let helpAlreadySeen = false;
+  try { helpAlreadySeen = localStorage.getItem(HELP_SEEN_KEY) === "1"; } catch {}
+  if (!helpAlreadySeen) openHelp();
   // Live filter the Merchants table as you type, by business name or Credora ID.
   $("searchInput").addEventListener("input", () => {
     const q = $("searchInput").value;
