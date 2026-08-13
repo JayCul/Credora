@@ -68,16 +68,30 @@ function resolveCurrencyHint(text) {
   return null;
 }
 
-/// Loose enough to accept "08012345678", "+234 801 234 5678", "234-801-234-5678",
-/// strict enough to reject a random short reply like "no" or "ok" from being
-/// misread as a phone number.
+/// Requires an explicit country code (a leading +). This is deliberate: a bare local
+/// number like "08012345678" produces an invalid WhatsApp JID (JIDs are the full
+/// international number, no leading 0, no +), and silently accepting one here was
+/// the actual cause of a real bug, Baileys throwing cryptic internal session errors
+/// when told to message a JID that doesn't correspond to any real WhatsApp account.
 function looksLikePhoneNumber(text) {
-  const digits = text.replace(/[^\d]/g, "");
+  const t = text.trim();
+  if (!t.startsWith("+")) return false;
+  const digits = t.replace(/[^\d]/g, "");
+  return digits.length >= 8 && digits.length <= 15;
+}
+
+/// A number with enough digits to plausibly be a phone number, but missing the
+/// leading + — the specific shape worth a "please include your country code" reply
+/// instead of silently giving up on confirmation altogether.
+function looksLikeNumberMissingCountryCode(text) {
+  const t = text.trim();
+  if (t.startsWith("+")) return false;
+  const digits = t.replace(/[^\d]/g, "");
   return digits.length >= 7 && digits.length <= 15;
 }
 
 function toWhatsAppJid(rawPhone) {
-  const digits = rawPhone.replace(/[^\d]/g, "");
+  const digits = rawPhone.replace(/[^\d]/g, ""); // WhatsApp JIDs have no leading +
   return `${digits}@s.whatsapp.net`;
 }
 
@@ -452,7 +466,7 @@ async function offerBuyerConfirmation(ctx, record) {
   const { jid, reply } = ctx;
   pendingBuyerRequest.set(jid, { ctx, record, expiresAt: Date.now() + PENDING_TTL_MS });
   await reply(
-    "Want your buyer to confirm this sale for extra credibility? Reply with their WhatsApp number (e.g. 08012345678), or reply SKIP to record it now without confirmation."
+    "Want your buyer to confirm this sale for extra credibility? Reply with their WhatsApp number, including the country code, e.g. +2348012345678, or reply SKIP to record it now without confirmation."
   );
 }
 
@@ -462,6 +476,17 @@ async function resolveBuyerRequest(sock, contractClient, store, merchantJid, mer
 
   if (Date.now() > awaiting.expiresAt || /^skip$/i.test(trimmed) || isCancellation(trimmed)) {
     await submitReceipt(sock, merchantJid, reply, contractClient, store, merchantHash, merchant, record);
+    return;
+  }
+
+  // Has enough digits to plausibly be a phone number, but no country code — this
+  // exact shape used to silently build an invalid WhatsApp JID and surface as a
+  // cryptic Baileys session error, rather than a clear ask to try again.
+  if (looksLikeNumberMissingCountryCode(trimmed)) {
+    await reply(
+      "Please include the country code, starting with +, e.g. +2348012345678 for Nigeria. Reply again with the full number, or SKIP to record without confirmation."
+    );
+    pendingBuyerRequest.set(merchantJid, { ctx: awaiting.ctx, record, expiresAt: Date.now() + PENDING_TTL_MS });
     return;
   }
 
