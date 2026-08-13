@@ -1,4 +1,4 @@
-# Pings both Render free-tier services every 9 minutes so they never hit the
+# Pings both Render free-tier services every 5 minutes so they never hit the
 # 15-minute idle threshold that puts them to sleep. Free to run here: this repo
 # is public, so GitHub Actions minutes are unmetered — no cron-job.org/UptimeRobot
 # account needed. Does NOT solve Render's separate ephemeral-storage problem (see
@@ -9,7 +9,7 @@ name: Keep Render services awake
 
 on:
   schedule:
-    - cron: "*/9 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {} # lets you trigger a one-off ping manually from the Actions tab
 
 jobs:
