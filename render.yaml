@@ -19,7 +19,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: NETWORK
-        value: testnet
+        value: mainnet
       - key: BOTCHAIN_RPC_URL
         sync: false
       - key: BOTCHAIN_TESTNET_RPC_URL
@@ -49,7 +49,7 @@ services:
     healthCheckPath: /dashboard.html
     envVars:
       - key: NETWORK
-        value: testnet
+        value: mainnet
       - key: BOTCHAIN_RPC_URL
         sync: false
       - key: BOTCHAIN_TESTNET_RPC_URL

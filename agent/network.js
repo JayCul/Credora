@@ -17,12 +17,12 @@ const NETWORKS = {
   },
 };
 
-/// Reads NETWORK from .env ("mainnet" | "testnet"; defaults to "testnet" so a fresh
-/// checkout can't accidentally fire a transaction at mainnet before you've deliberately
-/// opted in). BOTCHAIN_RPC_URL, if set, overrides the preset RPC for whichever network
-/// is selected — handy if you're running your own node or a proxy.
+/// Reads NETWORK from .env ("mainnet" | "testnet"; defaults to "mainnet" on this branch,
+/// which is the production deployment line). BOTCHAIN_RPC_URL, if set, overrides the
+/// preset RPC for whichever network is selected — handy if you're running your own node
+/// or a proxy.
 function resolveNetwork() {
-  const key = (process.env.NETWORK || "testnet").toLowerCase();
+  const key = (process.env.NETWORK || "mainnet").toLowerCase();
   const preset = NETWORKS[key];
   if (!preset) {
     throw new Error(`Unknown NETWORK "${key}" in .env — use "mainnet" or "testnet".`);

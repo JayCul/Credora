@@ -1,10 +1,11 @@
-// Dev/demo utility: seeds a few merchants with varied sales history so the lender
+// Dev/demo utility: seeds a few merchants with varied sales history so the sales
 // dashboard has something to show without needing a live WhatsApp flow first.
 // Usage: npx hardhat run scripts/seedDemoData.js --network <localhost|botchainTestnet|botchain>
 const hre = require("hardhat");
 const path = require("path");
 const fs = require("fs");
 const { hashPhone, hashText, toBytes3 } = require("../agent/hashing");
+const { NETWORKS } = require("../agent/network");
 require("dotenv").config();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -12,6 +13,19 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function main() {
   const salt = process.env.PHONE_HASH_SALT;
   if (!salt) throw new Error("Set PHONE_HASH_SALT in .env first.");
+
+  // This writes fake merchants and fake sales permanently on-chain. Fine on a
+  // testnet or local node, a real problem on mainnet, where a lender could later
+  // read "Amina's Rice & Grains" as if it were a genuine business. Require an
+  // explicit opt-in rather than let `npm run seed` (which targets --network
+  // botchain by default) fire real transactions at production by habit.
+  if (hre.network.name === NETWORKS.mainnet.name && process.env.CONFIRM_MAINNET_SEED !== "yes") {
+    throw new Error(
+      "Refusing to seed demo data on mainnet. This permanently writes fake receipts to " +
+        "production. If you really mean to do this (e.g. a live demo environment), re-run " +
+        "with CONFIRM_MAINNET_SEED=yes set."
+    );
+  }
 
   const deploymentFile = path.join(__dirname, "..", "deployments", `${hre.network.name}.json`);
   const { address } = JSON.parse(fs.readFileSync(deploymentFile, "utf8"));

@@ -116,7 +116,7 @@ It opens at `http://localhost:4000/dashboard.html` with three views (Overview, M
 
 Message the WhatsApp agent `/id` anytime to get a shareable link back. That's the intended distribution path, not sending the dashboard URL around blind.
 
-See **Setup** below for deploying and seeding demo data. Testnet first, mainnet once you're ready.
+See **Setup** below for deploying. This is the mainnet branch, so it deploys to real BOT Chain by default; use the `testnet` branch for a free dry run first if you haven't already.
 
 ## Security design
 
@@ -150,23 +150,18 @@ npx hardhat test        # 21 passing
 ```
 
 Fill in `.env`:
-- `NETWORK`: `testnet` or `mainnet`. Defaults to `testnet` so a fresh checkout can't accidentally fire a transaction at mainnet before you've deliberately opted in. Test everything on testnet first, and only flip to `mainnet` once you're ready for the real submission.
-- `DEPLOYER_PRIVATE_KEY` / `AGENT_PRIVATE_KEY`: wallet(s) funded with BOT on whichever network `NETWORK` selects. Testnet BOT is free from [faucet.botchain.ai/basic](https://faucet.botchain.ai/basic). Mainnet BOT has no faucet; it's swap-only via [dex.botchain.ai](https://dex.botchain.ai).
+- `NETWORK`: `testnet` or `mainnet`. This is the mainnet branch, so it defaults to `mainnet` here (the `testnet` branch defaults the other way, so a fresh checkout of that one can't accidentally fire a transaction at mainnet before you've opted in). Use a private key funded with real BOT before running anything on this branch.
+- `DEPLOYER_PRIVATE_KEY` / `AGENT_PRIVATE_KEY`: wallet(s) funded with BOT on whichever network `NETWORK` selects. Mainnet BOT has no faucet, it's swap-only via [dex.botchain.ai](https://dex.botchain.ai). Testnet BOT, for the `testnet` branch, is free from [faucet.botchain.ai/basic](https://faucet.botchain.ai/basic).
 - `GROQ_API_KEY` (recommended, free, no card) or `ANTHROPIC_API_KEY` (paid): powers the WhatsApp message parser. `agent/llmParser.js` uses Groq if it's present, otherwise falls back to Claude.
-- `PHONE_HASH_SALT`: any long random string. Generate once, never reuse, never commit.
+- `PHONE_HASH_SALT`: any long random string. Generate once, never reuse, never commit. Use a different one than whatever was used on testnet, this pepper is meant to be per-deployment.
 
-Deploy, testnet first:
+Deploy:
 ```bash
-npm run deploy:testnet     # writes deployments/botchainTestnet.json
-npm run deploy             # mainnet, once you're ready, writes deployments/botchain.json
+npm run deploy             # mainnet (this branch's default), writes deployments/botchain.json
 ```
 `agent/contractClient.js` and `server.js` both read `deployments/<network>.json` automatically, based on whatever `NETWORK` in `.env` currently says, so switching networks is a one-line `.env` edit, not a code change.
 
-Optionally seed a few sample merchants so the dashboard has something to show right away:
-```bash
-npm run seed:testnet
-```
-Real chains don't let you fast-forward the clock the way a local Hardhat node does, so this respects the real 30-second per-merchant cooldown (temporarily relaxed via an admin call for the duration of seeding, then restored). Expect it to take a couple of minutes on testnet, not instant like on a local node.
+Seeding fake demo merchants (`npm run seed`) is deliberately blocked on mainnet unless you pass `CONFIRM_MAINNET_SEED=yes` — it writes permanent fake receipts to the real ledger, which a lender could later mistake for a genuine business. Leave it off in production; it's meant for the `testnet` branch and local demos.
 
 Run the agent:
 ```bash
