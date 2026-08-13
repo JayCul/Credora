@@ -14,6 +14,12 @@ const { ContractClient } = require("./contractClient");
 const { LocalStore } = require("./store");
 const { generateReceiptPdf } = require("./receiptPdf");
 const { computeProfit, PERIOD_LABELS } = require("./profit");
+const { startHealthServer } = require("./healthServer");
+
+// Shared across reconnects — startAgent() calls itself again on a dropped
+// connection, and the health server must only ever bind its port once, not
+// restart on every reconnect attempt.
+const agentStatus = { connected: false, startedAt: new Date().toISOString(), lastMessageAt: null };
 
 const AUTH_DIR = "auth_info_baileys";
 const MAX_MESSAGE_CHARS = 1000; // bounds prompt size/cost and blunts flood-style abuse
@@ -130,11 +136,13 @@ async function startAgent() {
       qrcode.generate(qr, { small: true });
     }
     if (connection === "close") {
+      agentStatus.connected = false;
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log(`Connection closed (code ${statusCode}). Reconnecting: ${shouldReconnect}`);
       if (shouldReconnect) startAgent();
     } else if (connection === "open") {
+      agentStatus.connected = true;
       console.log("✅ WhatsApp connected — Credora agent is live.");
     }
   });
@@ -142,6 +150,7 @@ async function startAgent() {
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
     for (const msg of messages) {
+      agentStatus.lastMessageAt = new Date().toISOString();
       try {
         await handleMessage(sock, contractClient, store, msg);
       } catch (err) {
@@ -617,6 +626,10 @@ async function submitExpense(reply, store, merchantHash, record) {
       `Tracked locally for your own profit calculation, this is not written on-chain and does not affect your credit score.`
   );
 }
+
+// Started once, outside startAgent(), since reconnects call startAgent() again and
+// a second attempt to bind the same port would crash the whole process.
+startHealthServer(() => agentStatus);
 
 startAgent().catch((err) => {
   console.error("Fatal agent error:", err);

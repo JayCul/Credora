@@ -15,7 +15,10 @@ const { LocalStore } = require("./agent/store");
 const { generateReceiptPdf } = require("./agent/receiptPdf");
 const { computeProfit, PERIOD_LABELS } = require("./agent/profit");
 
-const PORT = process.env.DASHBOARD_PORT || 4000;
+// Render (and most PaaS hosts) inject PORT and expect the app to bind to it
+// specifically, ignoring it in favor of a fixed local default would fail the
+// platform's health check. DASHBOARD_PORT stays the local-dev override.
+const PORT = process.env.PORT || process.env.DASHBOARD_PORT || 4000;
 const network = resolveNetwork();
 const store = new LocalStore(network.name);
 const TIER_NAMES = ["Unrated", "Bronze", "Silver", "Gold", "Platinum"];

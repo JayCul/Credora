@@ -1,0 +1,56 @@
+# Render Blueprint — deploy both services at once via Render's "Blueprint" option
+# (New > Blueprint, point it at this repo). Free tier for both.
+#
+# IMPORTANT, read before relying on this: Render's free tier has no persistent
+# storage of any kind, disk or Key Value are both wiped on every restart, not just
+# on deploys. That means auth_info_baileys/ (the WhatsApp session) and data/ (local
+# business names, item descriptions, expenses) do not survive a restart. On-chain
+# sales data is unaffected either way, it lives on BOT Chain, not on Render. See the
+# README's "Deploying to Render" section for what this setup does and doesn't solve,
+# and for the (optional) external keep-alive ping that stops the free tier idling out.
+
+services:
+  - type: web
+    name: credora-agent
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node agent/whatsapp.js
+    healthCheckPath: /health
+    envVars:
+      - key: NETWORK
+        value: testnet
+      - key: BOTCHAIN_RPC_URL
+        sync: false
+      - key: BOTCHAIN_TESTNET_RPC_URL
+        sync: false
+      - key: DEPLOYER_PRIVATE_KEY
+        sync: false
+      - key: AGENT_PRIVATE_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PHONE_HASH_SALT
+        sync: false
+      - key: DASHBOARD_BASE_URL
+        sync: false
+
+  - type: web
+    name: credora-dashboard
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    # Not /api/config on purpose — that returns 503 until a contract is deployed on
+    # whichever network NETWORK points at, which would make Render think a perfectly
+    # healthy dashboard is down before you've ever deployed anything to check.
+    healthCheckPath: /dashboard.html
+    envVars:
+      - key: NETWORK
+        value: testnet
+      - key: BOTCHAIN_RPC_URL
+        sync: false
+      - key: BOTCHAIN_TESTNET_RPC_URL
+        sync: false

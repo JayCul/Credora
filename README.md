@@ -173,6 +173,20 @@ npm run agent
 ```
 Scan the printed QR code with WhatsApp (Linked Devices, then Link a Device). Message the linked number to test.
 
+## Deploying to Render (free tier)
+
+`render.yaml` is a Blueprint that deploys both `agent/whatsapp.js` and `server.js` as free Web Services in one go: New, then Blueprint, then point it at this repo. Fill in the prompted env vars (private keys, API keys, salt) in Render's dashboard; they're marked `sync: false` in the Blueprint specifically so nothing secret ever gets committed to the repo.
+
+Read this before relying on it for anything beyond a demo: **Render's free tier has no persistent storage at all**, not disk, not their Key Value offering either, both get wiped on every restart, and restarts happen not just when you deploy but from Render's own maintenance and resource limits too. That means:
+
+- `auth_info_baileys/` (the WhatsApp session) gets wiped on restart, meaning a QR rescan.
+- `data/` (locally cached business names, item descriptions, expenses) gets wiped too.
+- Every on-chain sale, tier, and credit score is completely unaffected either way, since that data lives on BOT Chain, not on Render's disk.
+
+`agent/whatsapp.js` normally has no HTTP surface at all, since it's just a WebSocket connection to WhatsApp, so `agent/healthServer.js` adds a minimal `/health` endpoint purely so Render treats it as a Web Service instead of rejecting it (Render's free tier has no Background Worker option, paid plans start at $7/month for that). That same endpoint is also what keeps a free instance awake: Render sleeps free Web Services after 15 minutes with no HTTP traffic, so pointing a free external uptime pinger (cron-job.org, UptimeRobot, anything that can hit a URL on a timer) at `https://<your-agent>.onrender.com/health` every 10 to 14 minutes keeps it from ever going idle. It does not, and cannot, stop the disk-wiping restarts described above, those are a separate problem this doesn't touch.
+
+If this needs to survive restarts without re-scanning a QR code, the two real fixes are a small paid persistent disk on Render (roughly $7 to 10/month all in), or a genuinely free always-on VM with real persistent disk, like Oracle Cloud's Always Free tier, at the cost of setting up and maintaining the VM yourself instead of a git-push deploy.
+
 ## Demo script (for judges)
 
 1. From a fresh phone number, message the agent's WhatsApp number: *"Hi"*. Show it asking for a business name, answer it, and show the welcome message.
