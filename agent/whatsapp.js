@@ -143,9 +143,25 @@ async function startAgent() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // A hosted log viewer (Render, etc.) timestamps every console.log line separately,
+  // which breaks the ASCII QR's grid alignment the moment it's copied or reflowed —
+  // each row arrives as its own log entry instead of one contiguous block. Pairing
+  // code sidesteps that entirely: WHATSAPP_PHONE_NUMBER (digits only, country code,
+  // no leading +, e.g. 2348012345678) gets a short code from WhatsApp itself, typed
+  // in under Linked Devices → Link with phone number instead, no image involved.
+  // Only requested once, the first time this device has never registered before.
+  if (process.env.WHATSAPP_PHONE_NUMBER && !state.creds.registered) {
+    try {
+      const code = await sock.requestPairingCode(process.env.WHATSAPP_PHONE_NUMBER.replace(/[^\d]/g, ""));
+      console.log(`\nWhatsApp pairing code: ${code}\nEnter it under Linked Devices → Link with phone number.\n`);
+    } catch (err) {
+      console.error("Could not request a pairing code, falling back to QR:", err.message);
+    }
+  }
+
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
-    if (qr) {
+    if (qr && !process.env.WHATSAPP_PHONE_NUMBER) {
       console.log("\nScan with WhatsApp → Linked Devices → Link a Device:\n");
       qrcode.generate(qr, { small: true });
     }

@@ -36,6 +36,14 @@ services:
         sync: false
       - key: DASHBOARD_BASE_URL
         sync: false
+      # Digits only, country code, no leading + (e.g. 2348012345678). Optional, but
+      # worth setting on a hosted log viewer: without it, linking falls back to an
+      # ASCII QR code printed to logs, and most log viewers timestamp every line
+      # separately, which breaks the QR's grid the moment it's copied or reflowed.
+      # Set this and agent/whatsapp.js prints a short pairing code instead, entered
+      # under WhatsApp → Linked Devices → Link with phone number.
+      - key: WHATSAPP_PHONE_NUMBER
+        sync: false
 
   - type: web
     name: credora-dashboard
