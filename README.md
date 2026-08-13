@@ -20,7 +20,7 @@ Credora asks one question, the merchant's business name, and remembers them from
 
 > "Sold 2 bags of rice to Musa for 15000 naira"
 
-An AI agent figures out whether that's a sale or an expense, resolves shorthand ("270k" becomes 270,000, "2M" becomes 2,000,000), identifies the currency if one is mentioned, and runs a fraud and anomaly check. Anything ambiguous gets a human confirmation step before it's recorded. Sales get written as a tamper-evident receipt to `ReceiptLedger.sol` on BOT Chain; expenses are logged to a local ledger for the merchant's own bookkeeping. Every sale gets a real PDF receipt back in the same chat, instantly, and `/profit` gives a net profit summary anytime, split out by currency so nothing gets blended together that shouldn't be.
+An AI agent figures out whether that's a sale or an expense, resolves shorthand ("270k" becomes 270,000, "2M" becomes 2,000,000), identifies the currency if one is mentioned, and runs a fraud and anomaly check. Before any sale is recorded, the agent also offers to message the buyer directly and get their own independent confirmation, a second attestation that isn't just the merchant's word. Sales get written as a tamper-evident receipt to `ReceiptLedger.sol` on BOT Chain; expenses are logged to a local ledger for the merchant's own bookkeeping. Every sale gets a real PDF receipt back in the same chat, instantly, and `/profit` gives a net profit summary anytime, split out by currency so nothing gets blended together that shouldn't be.
 
 Over weeks, the on-chain sales record becomes a running reputation score and tier (Bronze through Platinum) that any microlender can check without taking the merchant's word for it. It's an alternative credit signal for someone who's never had one. No wallet, no seed phrase, no gas token to buy. The agent handles all of that; the merchant just chats.
 
@@ -45,11 +45,15 @@ LLM tool-call extraction (agent/llmParser.js, Groq or Claude)
         ▼
 Risk gate. Flagged, low-confidence, or ambiguous? Ask the merchant to reply CONFIRM first.
         │
-        ├── sale ──▶ agent/contractClient.js hashes the phone, does a staticCall
+        ├── sale ──▶ Buyer confirmation offer: got their WhatsApp number? Message
+        │            them directly and wait (up to 15 min) for their own YES or NO
+        │              ▼
+        │            agent/contractClient.js hashes the phone, does a staticCall
         │            preflight, sends the tx (amount × 100 happens here in code,
         │            never trusted to the LLM)
         │              ▼
         │            ReceiptLedger.sol on BOT Chain (testnet 968 / mainnet 677)
+        │            issueReceipt(), then confirmReceipt() too if the buyer already said yes
         │              ▼
         │            WhatsApp reply (receipt id, tx hash, tier/score) plus a PDF receipt
         │
@@ -78,6 +82,19 @@ A few small pieces make Credora feel like a proper accounting agent instead of a
 **PDF receipts** (`agent/receiptPdf.js`) are generated server-side with `pdfkit`, styled to match the dashboard's palette, and built from one code path used two ways: sent back as a WhatsApp document immediately after every recorded sale, and downloadable on demand from the dashboard's merchant drawer.
 
 Expenses and receipt details live in `agent/store.js`, a small local JSON store mapping `merchantHash` to business name, `receiptId` to sale details, and `expenseId` to expense details. This is a deliberate, honest split in the trust model: the chain remains the only source of truth for anything the credit score depends on (sale amounts, tiers, streaks), while business names, item descriptions, and all expense data live off-chain because they're self-reported and not attested, and putting them on a public ledger would be a privacy loss for no real benefit. Every surface that shows this data labels it clearly rather than implying it carries the same weight as on-chain history.
+
+## Buyer confirmation
+
+A fair question about any self-reported system: what stops a merchant from just making up sales to inflate their own score? Honest answer, nothing did, until this. Every sale that's otherwise ready to record gets one more offer first: "want your buyer to confirm this for extra credibility?" If the merchant gives a phone number, the agent messages that person directly and independently, on their own WhatsApp, and waits for a real YES or NO.
+
+A few things make this a real second attestation and not just theater:
+
+- **It's a real contract function, not a local flag.** `confirmReceipt(receiptId, buyerHash)` on `ReceiptLedger.sol` is callable only by `AGENT_ROLE`, can only be called once per receipt, and reverts if the `buyerHash` doesn't match the one recorded at the original `issueReceipt` call. A lender reading the chain directly sees confirmation status themselves; it isn't something the agent could quietly claim in a local file.
+- **A merchant can't confirm their own sale.** If the "buyer" number matches the merchant's own, the agent refuses outright.
+- **It doesn't block forever.** If the buyer doesn't respond within 15 minutes, the sale still gets recorded, just honestly left unconfirmed rather than lost. A late reply can still be sent, it just won't retroactively upgrade that receipt in this version, a known, stated limitation rather than a silent gap.
+- **It's tracked but not scored.** Each merchant's `confirmedCount` is a real on-chain number, visible on the dashboard and in PDF receipts, but it's deliberately *not* folded into `creditScore()`. A lender sees "7 receipts, 3 buyer-confirmed" as its own transparent signal and weighs it themselves, rather than trusting an opaque blended number.
+
+What this doesn't claim to solve: a merchant could still collude with a friend willing to always say yes. That's a real limit of any two-party self-attestation without a bank or payment rail in the loop, and it's worth saying plainly rather than overselling. What it does do is raise the bar from "control one phone number" to "control or convince two independent people," and it leaves a second, separately-timestamped on-chain trail that a one-sided fabrication never has.
 
 ## Sales dashboard
 
@@ -117,7 +134,8 @@ This is an attestation ledger, not a payments or escrow system. No value ever mo
 | Schema-constrained tool-call extraction | agent | The merchant's raw text is only ever *extracted from* by the LLM, never concatenated into a system prompt or given tool access. This closes off "message contains hidden instructions for the AI" prompt injection at the API level |
 | Deterministic amount conversion | agent | The LLM only resolves shorthand; the ×100 minor-unit multiplication happens in plain code afterward, so it can't be silently skipped the way an LLM step occasionally can be |
 | History-aware anomaly flags plus a human CONFIRM step | agent | AI flags anything unusual *for this specific merchant*; a human is in the loop before it ever reaches the chain, on top of the hard on-chain cap |
-| 14 passing tests including attack paths | `test/ReceiptLedger.test.js` | Unauthorized caller, wrong signer, replayed signature, expired signature, paused state, cap and cooldown breach all asserted to revert |
+| `confirmReceipt` bound to the original `buyerHash` | contract | A second attestation from the buyer, verifiable on-chain, that can't be called twice, can't be spoofed with an unrelated hash, and can't be self-issued by the merchant |
+| 21 passing tests including attack paths | `test/ReceiptLedger.test.js` | Unauthorized caller, wrong signer, replayed signature, expired signature, paused state, cap and cooldown breach, double-confirmation, and buyer-hash mismatch all asserted to revert |
 | HTML-escaped free text | `public/dashboard.html` | Business names, item descriptions, and buyer names are all self-reported over WhatsApp; every one of those fields is escaped before insertion into the DOM, since the dashboard renders them via `innerHTML` |
 | Business names never touch the chain | `agent/store.js` | Kept in a local off-chain store instead, so self-reported, unverified identity data is never confused with the attested on-chain credit history |
 
@@ -127,7 +145,7 @@ This is an attestation ledger, not a payments or escrow system. No value ever mo
 npm install
 cp .env.example .env    # fill in the values below
 npx hardhat compile
-npx hardhat test        # 14 passing
+npx hardhat test        # 21 passing
 ```
 
 Fill in `.env`:
@@ -158,21 +176,22 @@ Scan the printed QR code with WhatsApp (Linked Devices, then Link a Device). Mes
 ## Demo script (for judges)
 
 1. From a fresh phone number, message the agent's WhatsApp number: *"Hi"*. Show it asking for a business name, answer it, and show the welcome message.
-2. Send *"Sold 2 bags of rice to Musa for 15000 naira"*. Watch the WhatsApp reply (parsed, recorded on-chain, tx hash, tier and credit score) and the PDF receipt arriving as a document in the same chat, seconds later.
-3. Send *"Bought fuel for 3000 naira"* to show an expense being logged locally, no on-chain transaction, and the reply saying so explicitly.
-4. Send `/profit` to show the net profit summary combining the sale and the expense. Try `/profit today` and `/profit all` to show period switching.
-5. Send `/menu` to show the full command list.
-6. Open the tx on the explorer link from step 2 (`scan.bohr.life` on testnet, `scan.botchain.ai` on mainnet) to show the `ReceiptIssued` event live on chain.
-7. Send a second, larger sale to show a `TierUpgraded` event and the credit score climbing.
-8. Send an ambiguous message with no amount to show the clarification flow, then send an unusually large amount to show the CONFIRM gate.
-9. Message `/id` to get the merchant's shareable Credora ID and dashboard link.
-10. Open that link with `npm run dashboard` running: business name, tier badge, credit-score gauge, progress to next tier, all read live from chain, plus the receipt list with a Download PDF button. Switch to the Merchants view to show the full list discovered from chain, and to About for the onboarding and PDF explainer.
-11. Optionally, show a test file assertion failing on purpose, like an unauthorized wallet trying to call `issueReceipt`, to demonstrate the access-control guard live.
+2. Send *"Sold 2 bags of rice to Musa for 15000 naira"*. When asked whether to request buyer confirmation, reply SKIP. Watch the WhatsApp reply (parsed, recorded on-chain, tx hash, tier and credit score) and the PDF receipt arriving as a document in the same chat, seconds later.
+3. Send another sale and, when asked, provide a second phone number as the buyer instead of skipping. Show the confirmation request arriving on that number, reply YES from it, and show both the merchant's reply and the PDF receipt now marked "buyer confirmed."
+4. Send *"Bought fuel for 3000 naira"* to show an expense being logged locally, no on-chain transaction, and the reply saying so explicitly.
+5. Send `/profit` to show the net profit summary combining the sales and the expense. Try `/profit today` and `/profit all` to show period switching.
+6. Send `/menu` to show the full command list.
+7. Open the tx on the explorer link from step 2 (`scan.bohr.life` on testnet, `scan.botchain.ai` on mainnet) to show the `ReceiptIssued` event live on chain, and the `ReceiptConfirmed` event from step 3 alongside it.
+8. Send a second, larger sale to show a `TierUpgraded` event and the credit score climbing.
+9. Send an ambiguous message with no amount to show the clarification flow, then send an unusually large amount to show the CONFIRM gate.
+10. Message `/id` to get the merchant's shareable Credora ID and dashboard link.
+11. Open that link with `npm run dashboard` running: business name, tier badge, credit-score gauge, progress to next tier, all read live from chain, plus the receipt list showing the buyer-confirmed badge and a Download PDF button. Switch to the Merchants view to show the full list discovered from chain, and to About for the onboarding and PDF explainer.
+12. Optionally, show a test file assertion failing on purpose, like an unauthorized wallet trying to call `issueReceipt`, to demonstrate the access-control guard live.
 
 ## Roadmap (beyond the hackathon)
 
 - Bring expenses and net profit into the dashboard itself (currently WhatsApp-only), with the same "self-reported, not on-chain" labeling
-- Buyer-side confirmation (two-sided attestation) to further harden against fabricated receipts
+- Let a buyer's late reply (after the 15-minute window) still upgrade an already-recorded receipt to confirmed, instead of only working within that window
 - A gas-sponsored relayer using the existing `issueReceiptWithSig` path, so merchants never need BOT at all
 - Admin-configurable tier thresholds via governance rather than hardcoded constants
 - Multiple concurrent `AGENT_ROLE` workers for horizontal scaling, each independently revocable

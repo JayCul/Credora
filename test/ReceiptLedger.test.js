@@ -200,6 +200,85 @@ describe("ReceiptLedger", function () {
     });
   });
 
+  describe("confirmReceipt (buyer-side confirmation)", function () {
+    it("records a confirmation, marks it confirmed, and bumps the merchant's confirmedCount", async function () {
+      const { ledger, agent } = await deploy();
+      const tx = await ledger.connect(agent).issueReceipt(merchantHash, buyerHash, 5000, NGN, itemHash, "");
+      const receipt = await tx.wait();
+      const receiptId = receipt.logs
+        .map((l) => { try { return ledger.interface.parseLog(l); } catch { return null; } })
+        .find((e) => e?.name === "ReceiptIssued").args.receiptId;
+
+      await expect(ledger.connect(agent).confirmReceipt(receiptId, buyerHash))
+        .to.emit(ledger, "ReceiptConfirmed")
+        .withArgs(receiptId, merchantHash, buyerHash, anyValue);
+
+      expect(await ledger.receiptConfirmed(receiptId)).to.equal(true);
+      const profile = await ledger.getMerchantProfile(merchantHash);
+      expect(profile.confirmedCount).to.equal(1n);
+    });
+
+    it("rejects confirming the same receipt twice", async function () {
+      const { ledger, agent } = await deploy();
+      await ledger.connect(agent).issueReceipt(merchantHash, buyerHash, 5000, NGN, itemHash, "");
+      await ledger.connect(agent).confirmReceipt(1, buyerHash);
+      await expect(ledger.connect(agent).confirmReceipt(1, buyerHash)).to.be.revertedWithCustomError(
+        ledger,
+        "AlreadyConfirmed"
+      );
+    });
+
+    it("rejects a buyerHash that doesn't match the one recorded at issuance", async function () {
+      const { ledger, agent } = await deploy();
+      await ledger.connect(agent).issueReceipt(merchantHash, buyerHash, 5000, NGN, itemHash, "");
+      const wrongBuyerHash = ethers.keccak256(ethers.toUtf8Bytes("buyer:+2340000000000"));
+      await expect(ledger.connect(agent).confirmReceipt(1, wrongBuyerHash)).to.be.revertedWithCustomError(
+        ledger,
+        "BuyerHashMismatch"
+      );
+    });
+
+    it("rejects confirming a receipt id that was never issued", async function () {
+      const { ledger, agent } = await deploy();
+      await expect(ledger.connect(agent).confirmReceipt(1, buyerHash)).to.be.revertedWithCustomError(
+        ledger,
+        "ReceiptDoesNotExist"
+      );
+      await expect(ledger.connect(agent).confirmReceipt(0, buyerHash)).to.be.revertedWithCustomError(
+        ledger,
+        "ReceiptDoesNotExist"
+      );
+    });
+
+    it("rejects confirmation from a caller without AGENT_ROLE", async function () {
+      const { ledger, agent, attacker } = await deploy();
+      await ledger.connect(agent).issueReceipt(merchantHash, buyerHash, 5000, NGN, itemHash, "");
+      await expect(ledger.connect(attacker).confirmReceipt(1, buyerHash)).to.be.revertedWithCustomError(
+        ledger,
+        "AccessControlUnauthorizedAccount"
+      );
+    });
+
+    it("is blocked while paused", async function () {
+      const { ledger, admin, agent } = await deploy();
+      await ledger.connect(agent).issueReceipt(merchantHash, buyerHash, 5000, NGN, itemHash, "");
+      await ledger.connect(admin).pause();
+      await expect(ledger.connect(agent).confirmReceipt(1, buyerHash)).to.be.revertedWithCustomError(
+        ledger,
+        "EnforcedPause"
+      );
+    });
+
+    it("does not fold confirmedCount into creditScore — it stays a separate signal", async function () {
+      const { ledger, agent } = await deploy();
+      await ledger.connect(agent).issueReceipt(merchantHash, buyerHash, 5000, NGN, itemHash, "");
+      const scoreBefore = await ledger.creditScore(merchantHash);
+      await ledger.connect(agent).confirmReceipt(1, buyerHash);
+      const scoreAfter = await ledger.creditScore(merchantHash);
+      expect(scoreAfter).to.equal(scoreBefore);
+    });
+  });
+
   async function currentTimestamp() {
     const block = await ethers.provider.getBlock("latest");
     return block.timestamp;

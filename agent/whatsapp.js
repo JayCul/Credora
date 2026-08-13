@@ -18,6 +18,7 @@ const { computeProfit, PERIOD_LABELS } = require("./profit");
 const AUTH_DIR = "auth_info_baileys";
 const MAX_MESSAGE_CHARS = 1000; // bounds prompt size/cost and blunts flood-style abuse
 const PENDING_TTL_MS = 5 * 60 * 1000;
+const BUYER_CONFIRM_TIMEOUT_MS = 15 * 60 * 1000; // real time for a real person to check their phone
 const DASHBOARD_BASE_URL = process.env.DASHBOARD_BASE_URL || "http://localhost:3000";
 
 const isIdRequest = (text) => /^\/?(id|my ?id|score|my ?score)$/i.test(text.trim());
@@ -31,6 +32,8 @@ const isGreetingOrCommand = (text) => isGreeting(text) || isMenuRequest(text) ||
 const pendingConfirmations = new Map(); // jid -> { kind: "sale"|"expense", record, expiresAt }
 const pendingOnboarding = new Map(); // jid -> { stashedText: string | null }
 const pendingCurrency = new Map(); // jid -> { parsed, expiresAt }
+const pendingBuyerRequest = new Map(); // merchantJid -> { record, expiresAt } — "want buyer confirmation?"
+const pendingBuyerConfirmation = new Map(); // buyerJid -> { merchantJid, merchant, record, buyerPhone, timer } — "please confirm"
 
 // Common ways people actually write a currency in chat, mapped to ISO codes. A raw
 // 3-letter code (any of them, not just ones listed here) is also accepted directly —
@@ -57,6 +60,19 @@ function resolveCurrencyHint(text) {
   }
   if (/^[a-z]{3}$/i.test(t)) return t.toUpperCase(); // any raw ISO code typed directly
   return null;
+}
+
+/// Loose enough to accept "08012345678", "+234 801 234 5678", "234-801-234-5678",
+/// strict enough to reject a random short reply like "no" or "ok" from being
+/// misread as a phone number.
+function looksLikePhoneNumber(text) {
+  const digits = text.replace(/[^\d]/g, "");
+  return digits.length >= 7 && digits.length <= 15;
+}
+
+function toWhatsAppJid(rawPhone) {
+  const digits = rawPhone.replace(/[^\d]/g, "");
+  return `${digits}@s.whatsapp.net`;
 }
 
 // IDs of messages the bot itself has sent, so a "fromMe" event can be told apart from
@@ -160,6 +176,16 @@ async function handleMessage(sock, contractClient, store, msg) {
     return sent;
   };
 
+  // ── Resolve a buyer's reply to a confirmation request FIRST, before anything
+  //    else — including the onboarding gate, since a buyer may never have talked
+  //    to this agent before and shouldn't be asked for a business name when
+  //    they're just replying YES or NO to someone else's sale.
+  const buyerEntry = pendingBuyerConfirmation.get(jid);
+  if (buyerEntry) {
+    await resolveBuyerConfirmation(sock, contractClient, store, jid, text, buyerEntry);
+    return;
+  }
+
   const merchantHash = contractClient.hashPhone(merchantPhone);
 
   // ── Onboarding gate — every unregistered merchant goes through this before
@@ -251,6 +277,14 @@ async function handleMessage(sock, contractClient, store, msg) {
     return;
   }
 
+  // ── Resolve "do you want your buyer to confirm this?" ────────────────────
+  const awaitingBuyerRequest = pendingBuyerRequest.get(jid);
+  if (awaitingBuyerRequest) {
+    pendingBuyerRequest.delete(jid);
+    await resolveBuyerRequest(sock, contractClient, store, jid, merchant, merchantHash, text, awaitingBuyerRequest, reply);
+    return;
+  }
+
   // ── Resolve a pending "what currency was that" question ─────────────────
   const awaitingCurrency = pendingCurrency.get(jid);
   if (awaitingCurrency) {
@@ -282,7 +316,7 @@ async function handleMessage(sock, contractClient, store, msg) {
       if (pending.kind === "expense") {
         await submitExpense(reply, store, merchantHash, pending.record);
       } else {
-        await submitReceipt(sock, jid, reply, contractClient, store, merchantHash, merchant, pending.record);
+        await offerBuyerConfirmation({ sock, jid, reply, contractClient, store, merchantHash, merchant }, pending.record);
       }
       return;
     } else if (isCancellation(text)) {
@@ -344,7 +378,7 @@ async function handleMessage(sock, contractClient, store, msg) {
 /// and the "what currency was that" continuation, so both end up in exactly the same
 /// place regardless of how the currency got resolved.
 async function finalizeTransaction(ctx, parsed, rawCurrencyCode) {
-  const { sock, jid, reply, contractClient, store, merchantHash, merchant, merchantPhone } = ctx;
+  const { jid, reply, merchantHash, merchant } = ctx;
   const currencyCode = rawCurrencyCode.toUpperCase().slice(0, 3).padEnd(3, "D");
   const needsConfirmation =
     parsed.clarification_needed || parsed.confidence < 0.6 || (parsed.flags && parsed.flags.length > 0);
@@ -352,8 +386,8 @@ async function finalizeTransaction(ctx, parsed, rawCurrencyCode) {
 
   if (parsed.transaction_type === "sale") {
     const record = {
-      merchantPhone,
-      buyerPhone: null, // buyers are rarely reachable on WhatsApp; hashed anonymously on-chain instead
+      merchantPhone: ctx.merchantPhone,
+      buyerPhone: null, // filled in later if the merchant provides one for confirmation
       amountMinor: Math.round(parsed.amount * 100), // *100 done here in code, never trusted to the LLM
       currencyCode,
       item: description,
@@ -365,7 +399,7 @@ async function finalizeTransaction(ctx, parsed, rawCurrencyCode) {
       await reply(confirmationPrompt("Ready to record", description, record.amountMinor, currencyCode, parsed));
       return;
     }
-    await submitReceipt(sock, jid, reply, contractClient, store, merchantHash, merchant, record);
+    await offerBuyerConfirmation(ctx, record);
     return;
   }
 
@@ -382,7 +416,7 @@ async function finalizeTransaction(ctx, parsed, rawCurrencyCode) {
     await reply(confirmationPrompt("Ready to log", description, record.amountMinor, currencyCode, parsed));
     return;
   }
-  await submitExpense(reply, store, merchantHash, record);
+  await submitExpense(reply, ctx.store, merchantHash, record);
 }
 
 function confirmationPrompt(verb, description, amountMinor, currencyCode, parsed) {
@@ -396,15 +430,125 @@ function confirmationPrompt(verb, description, amountMinor, currencyCode, parsed
   );
 }
 
-async function submitReceipt(sock, jid, reply, contractClient, store, merchantHash, merchant, record) {
+// ─────────────────────────────────────────────────────────────────────────
+// Buyer-side confirmation — a second, independent attestation on top of the
+// merchant's own report. See contracts/ReceiptLedger.sol's confirmReceipt() for
+// the on-chain half of this.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Every sale that's otherwise ready to record gets offered this step before it
+/// actually touches the chain — asking whether the merchant can get their buyer to
+/// independently confirm it happened.
+async function offerBuyerConfirmation(ctx, record) {
+  const { jid, reply } = ctx;
+  pendingBuyerRequest.set(jid, { ctx, record, expiresAt: Date.now() + PENDING_TTL_MS });
+  await reply(
+    "Want your buyer to confirm this sale for extra credibility? Reply with their WhatsApp number (e.g. 08012345678), or reply SKIP to record it now without confirmation."
+  );
+}
+
+async function resolveBuyerRequest(sock, contractClient, store, merchantJid, merchant, merchantHash, text, awaiting, reply) {
+  const { record } = awaiting;
+  const trimmed = text.trim();
+
+  if (Date.now() > awaiting.expiresAt || /^skip$/i.test(trimmed) || isCancellation(trimmed)) {
+    await submitReceipt(sock, merchantJid, reply, contractClient, store, merchantHash, merchant, record);
+    return;
+  }
+
+  if (!looksLikePhoneNumber(trimmed)) {
+    await reply("I didn't recognize that as a phone number. Recording the sale now without buyer confirmation.");
+    await submitReceipt(sock, merchantJid, reply, contractClient, store, merchantHash, merchant, record);
+    return;
+  }
+
+  // A merchant naming themselves as the buyer would trivially defeat the entire
+  // point of a second, independent party confirming anything.
+  if (contractClient.hashPhone(trimmed) === merchantHash) {
+    await reply(
+      "That's your own number. I need the actual buyer's number for this to mean anything, or reply SKIP to record without confirmation."
+    );
+    pendingBuyerRequest.set(merchantJid, { ctx: awaiting.ctx, record, expiresAt: Date.now() + PENDING_TTL_MS });
+    return;
+  }
+
+  const buyerJid = toWhatsAppJid(trimmed);
+  const amountText = formatAmount(record.amountMinor, record.currencyCode);
+
+  try {
+    await sock.sendMessage(buyerJid, {
+      text:
+        `Hi! ${merchant.businessName} on Credora says they sold you "${record.item}" for ${amountText}.\n\n` +
+        `Reply YES to confirm this happened, or NO if this isn't right.`,
+    });
+  } catch (err) {
+    console.error("Could not message buyer number:", err.message);
+    await reply("Couldn't reach that number on WhatsApp. Recording the sale now without buyer confirmation.");
+    await submitReceipt(sock, merchantJid, reply, contractClient, store, merchantHash, merchant, record);
+    return;
+  }
+
+  const timer = setTimeout(async () => {
+    if (!pendingBuyerConfirmation.has(buyerJid)) return; // already resolved by a reply
+    pendingBuyerConfirmation.delete(buyerJid);
+    await reply("Your buyer hasn't responded yet, so I've recorded the sale without their confirmation. You can always ask again next time.");
+    await submitReceipt(sock, merchantJid, reply, contractClient, store, merchantHash, merchant, record);
+  }, BUYER_CONFIRM_TIMEOUT_MS);
+
+  pendingBuyerConfirmation.set(buyerJid, { merchantJid, merchant, merchantHash, record, buyerPhone: trimmed, reply, timer });
+
+  await reply(
+    `Sent a confirmation request to ${trimmed}. I'll record the sale once they respond, or automatically in 15 minutes if they don't.`
+  );
+}
+
+async function resolveBuyerConfirmation(sock, contractClient, store, buyerJid, text, entry) {
+  const { merchantJid, merchant, merchantHash, record, buyerPhone, reply: merchantReply, timer } = entry;
+  const buyerReply = (body) => sock.sendMessage(buyerJid, { text: body });
+
+  if (isConfirmation(text)) {
+    clearTimeout(timer);
+    pendingBuyerConfirmation.delete(buyerJid);
+    await buyerReply("Thanks for confirming! This helps build their credit history.");
+    await submitReceipt(sock, merchantJid, merchantReply, contractClient, store, merchantHash, merchant, record, buyerPhone);
+    return;
+  }
+
+  if (isCancellation(text) || /^no\b/i.test(text.trim())) {
+    clearTimeout(timer);
+    pendingBuyerConfirmation.delete(buyerJid);
+    await buyerReply("Got it, thanks for letting us know.");
+    await merchantReply("Your buyer said this sale wasn't right, so I didn't record it. Double check the details and try again if needed.");
+    return;
+  }
+
+  await buyerReply('Sorry, I didn\'t understand. Reply YES to confirm this sale happened, or NO if it isn\'t right.');
+}
+
+async function submitReceipt(sock, jid, reply, contractClient, store, merchantHash, merchant, record, confirmedBuyerPhone) {
   await reply("Recording on-chain… ⛓️");
+  const submitRecord = confirmedBuyerPhone ? { ...record, buyerPhone: confirmedBuyerPhone } : record;
+
   let result;
   try {
-    result = await contractClient.issueReceipt(record);
+    result = await contractClient.issueReceipt(submitRecord);
   } catch (err) {
     console.error("issueReceipt failed:", err);
     await reply(`❌ Couldn't record that: ${err.message || "unknown error"}`);
     return;
+  }
+
+  // Buyer already said yes before this was ever recorded — mark it confirmed in the
+  // same flow, so the very first time this receipt appears on-chain, it's already
+  // carrying its second attestation, not upgraded later.
+  let buyerConfirmed = false;
+  if (confirmedBuyerPhone && result.receiptId) {
+    try {
+      await contractClient.confirmReceipt(result.receiptId, confirmedBuyerPhone);
+      buyerConfirmed = true;
+    } catch (err) {
+      console.error("confirmReceipt failed (receipt is still recorded, just not marked confirmed):", err.message);
+    }
   }
 
   const buyerName = record.memo?.startsWith("Buyer: ") ? record.memo.slice(7) : null;
@@ -418,10 +562,11 @@ async function submitReceipt(sock, jid, reply, contractClient, store, merchantHa
     currencyCode: record.currencyCode,
     txHash: result.txHash,
     timestamp,
+    buyerConfirmed,
   });
 
   await reply(
-    `✅ Receipt #${result.receiptId} recorded.\n` +
+    `✅ Receipt #${result.receiptId} recorded${buyerConfirmed ? " (buyer confirmed)" : ""}.\n` +
       `${formatAmount(record.amountMinor, record.currencyCode)}, ${record.item}\n` +
       `Tier: ${result.tier}  |  Credit score: ${result.creditScore}/1000\n` +
       `${result.explorerUrl}`
@@ -445,6 +590,7 @@ async function submitReceipt(sock, jid, reply, contractClient, store, merchantHa
       tier: result.tier,
       creditScore: result.creditScore,
       standingLabel: "Standing at time of sale",
+      buyerConfirmed,
     });
     await sock.sendMessage(jid, {
       document: pdfBuffer,

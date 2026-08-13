@@ -59,6 +59,12 @@ function describeRevert(contract, err) {
         return `That request expired before it reached the chain. Please try again.`;
       case "InvalidSignature":
         return `That request's signature didn't check out. Please try again.`;
+      case "ReceiptDoesNotExist":
+        return `That receipt doesn't exist.`;
+      case "AlreadyConfirmed":
+        return `That receipt was already confirmed.`;
+      case "BuyerHashMismatch":
+        return `That confirmation doesn't match the buyer on record for this receipt.`;
       default:
         return `Contract rejected this: ${parsed.name}`;
     }
@@ -173,6 +179,33 @@ class ContractClient {
       creditScore: summary.creditScore,
       explorerUrl: `${this.network.explorerUrl}/tx/${receipt.hash}`,
     };
+  }
+
+  /// Records the buyer's independent confirmation for an already-issued receipt.
+  /// `buyerPhone` must be the exact number the sale was originally issued with —
+  /// hashing it the same way here is what lets the contract verify this confirmation
+  /// is bound to the right receipt, not just any buyerHash the caller feels like passing.
+  async confirmReceipt(receiptId, buyerPhone) {
+    const buyerHash = this.hashPhone(buyerPhone);
+    const args = [BigInt(receiptId), buyerHash];
+
+    try {
+      await this.contract.confirmReceipt.staticCall(...args);
+    } catch (err) {
+      const friendly = describeRevert(this.contract, err);
+      throw new Error(friendly || err.shortMessage || err.message);
+    }
+
+    let receipt;
+    try {
+      const tx = await this.contract.confirmReceipt(...args);
+      receipt = await tx.wait();
+    } catch (err) {
+      const friendly = describeRevert(this.contract, err);
+      throw new Error(friendly || err.shortMessage || err.message);
+    }
+
+    return { txHash: receipt.hash, explorerUrl: `${this.network.explorerUrl}/tx/${receipt.hash}` };
   }
 }
 

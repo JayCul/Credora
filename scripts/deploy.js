@@ -2,6 +2,7 @@ const hre = require("hardhat");
 const fs = require("fs");
 const path = require("path");
 const { NETWORKS } = require("../agent/network");
+const { syncAbi } = require("./syncAbi");
 
 function explorerBaseFor(networkName) {
   const preset = Object.values(NETWORKS).find((n) => n.name === networkName);
@@ -72,6 +73,9 @@ async function main() {
   fs.writeFileSync(outFile, JSON.stringify(deploymentInfo, null, 2));
   console.log(`\nSaved deployment info to deployments/${hre.network.name}.json`);
   console.log("The WhatsApp agent (agent/contractClient.js) reads this file automatically.");
+
+  const abiCount = syncAbi();
+  console.log(`Synced public/abi/ReceiptLedger.json (${abiCount} entries) so the dashboard matches this contract.`);
 }
 
 main().catch((error) => {

@@ -52,6 +52,7 @@ contract ReceiptLedger is AccessControl, Pausable, ReentrancyGuard, EIP712 {
         uint64 lastReceiptDay; // lastReceiptAt / 1 days, used for streak accounting
         uint32 currentStreakDays;
         uint32 longestStreakDays;
+        uint32 confirmedCount; // subset of receiptCount independently confirmed by the buyer
         Tier tier;
     }
 
@@ -62,6 +63,12 @@ contract ReceiptLedger is AccessControl, Pausable, ReentrancyGuard, EIP712 {
     mapping(bytes32 => MerchantProfile) public merchants;
     mapping(bytes32 => uint256) public nonces; // replay protection, keyed per merchantHash
     uint64 public receiptCounter;
+
+    // Per-receipt data needed to independently verify and record a buyer's later
+    // confirmation. Populated once at issuance, never mutated afterward.
+    mapping(uint64 => bytes32) public receiptBuyerHash;
+    mapping(uint64 => bytes32) public receiptMerchantHash;
+    mapping(uint64 => bool) public receiptConfirmed;
 
     /// @notice Upper bound on a single receipt's declared value. Caps the damage a
     ///         compromised or malfunctioning agent can do in one transaction.
@@ -99,6 +106,11 @@ contract ReceiptLedger is AccessControl, Pausable, ReentrancyGuard, EIP712 {
     event TierUpgraded(bytes32 indexed merchantHash, Tier oldTier, Tier newTier);
     event MaxReceiptAmountUpdated(uint128 oldMax, uint128 newMax);
     event MinReceiptIntervalUpdated(uint32 oldInterval, uint32 newInterval);
+    /// @notice A second, independent attestation: the buyer confirmed this sale
+    ///         actually happened, separately from and after the merchant's original
+    ///         report. Its own timestamp is itself part of the signal — a real
+    ///         confirmation takes real time to arrive.
+    event ReceiptConfirmed(uint64 indexed receiptId, bytes32 indexed merchantHash, bytes32 indexed buyerHash, uint64 timestamp);
 
     // ─────────────────────────────────────────────────────────────────────
     // Errors
@@ -109,6 +121,9 @@ contract ReceiptLedger is AccessControl, Pausable, ReentrancyGuard, EIP712 {
     error TooSoon(uint64 nextAllowedAt);
     error SignatureExpired();
     error InvalidSignature();
+    error ReceiptDoesNotExist();
+    error AlreadyConfirmed();
+    error BuyerHashMismatch();
 
     // ─────────────────────────────────────────────────────────────────────
     // Constructor
@@ -233,7 +248,35 @@ contract ReceiptLedger is AccessControl, Pausable, ReentrancyGuard, EIP712 {
         }
 
         receiptId = ++receiptCounter;
+        receiptBuyerHash[receiptId] = buyerHash;
+        receiptMerchantHash[receiptId] = merchantHash;
         emit ReceiptIssued(receiptId, merchantHash, buyerHash, amountMinor, currencyCode, itemHash, memo, nowTs);
+    }
+
+    /// @notice Records the buyer's own confirmation that a sale actually happened —
+    ///         a second, independent attestation on top of the merchant's original
+    ///         report. Callable only by AGENT_ROLE, after the agent has separately
+    ///         verified this directly with the buyer (e.g. messaging their own
+    ///         WhatsApp number and getting an affirmative reply).
+    /// @dev This contract cannot verify a real-world conversation happened — that
+    ///      trust still runs through the agent. What it CAN guarantee: the
+    ///      confirmation is bound to the exact buyerHash recorded at issuance (an
+    ///      agent can't confirm a receipt against an unrelated hash), it can only
+    ///      happen once per receipt, and it leaves a second, separately-timestamped
+    ///      on-chain event a one-sided fabrication does not have. `confirmedCount`
+    ///      is tracked but deliberately NOT folded into `creditScore()` — it's
+    ///      surfaced as its own transparent signal so a lender can weigh it
+    ///      themselves rather than trust an opaque blend.
+    function confirmReceipt(uint64 receiptId, bytes32 buyerHash) external onlyRole(AGENT_ROLE) whenNotPaused nonReentrant {
+        if (receiptId == 0 || receiptId > receiptCounter) revert ReceiptDoesNotExist();
+        if (receiptConfirmed[receiptId]) revert AlreadyConfirmed();
+        if (receiptBuyerHash[receiptId] != buyerHash) revert BuyerHashMismatch();
+
+        receiptConfirmed[receiptId] = true;
+        bytes32 merchantHash = receiptMerchantHash[receiptId];
+        merchants[merchantHash].confirmedCount += 1;
+
+        emit ReceiptConfirmed(receiptId, merchantHash, buyerHash, uint64(block.timestamp));
     }
 
     function _computeTier(uint64 count, uint128 volume) internal pure returns (Tier) {

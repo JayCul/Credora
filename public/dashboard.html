@@ -243,6 +243,7 @@
   .receipt-row:last-child { border-bottom: none; }
   .receipt-row .info { min-width: 0; }
   .receipt-row .item { font-size: 12.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .confirmed-badge { font-size: 10px; font-weight: 700; color: var(--brand-dark); background: var(--brand-tint); padding: 2px 6px; border-radius: 999px; white-space: nowrap; }
   .receipt-row .meta { font-size: 11px; color: var(--muted-2); margin-top: 2px; }
   .receipt-row .amt { font-size: 12.5px; font-weight: 700; color: var(--brand-dark); flex-shrink: 0; }
   .pdf-link {
@@ -315,7 +316,7 @@
       <h1 id="pageTitle">Overview</h1>
       <div class="search-box">
         <span style="color:var(--muted-2);font-size:13px;">🔎</span>
-        <input id="searchInput" type="text" placeholder="Search a Credora ID (0x...)" spellcheck="false" />
+        <input id="searchInput" type="text" placeholder="Search by business name or Credora ID" spellcheck="false" />
       </div>
       <span class="pill" id="networkPill"><span class="dot"></span>Loading</span>
       <button class="icon-btn" id="refreshBtn" title="Refresh">⟳</button>
@@ -369,8 +370,9 @@
 
             <div class="cta-card">
               <h3>Start selling on Credora</h3>
-              <p>Message the WhatsApp agent "Hi" to register a business, then report sales in plain language. Every sale gets a real PDF receipt back instantly.</p>
+              <p>Message the WhatsApp agent "Hi" to register a business, then report sales and expenses in plain language. Every sale gets a real PDF receipt back instantly.</p>
               <span class="cmd">"Sold 2 bags of rice for 15000 naira"</span>
+              <span class="cmd">"Bought fuel for 3000 naira"</span>
               <a class="see-all" data-view="about" style="color:#fff; margin-top:10px;">How it works →</a>
             </div>
           </div>
@@ -405,8 +407,12 @@
       <div class="view" id="view-about">
         <div class="cta-card">
           <h3>How Credora works</h3>
-          <p>A merchant messages the WhatsApp agent "Hi" to get started, names their business, then just reports sales and expenses in plain language. Every sale gets a real PDF receipt back instantly, a verified record on chain, and /profit gives a net profit summary anytime.</p>
+          <p>A merchant messages the WhatsApp agent "Hi" to get started, names their business, then just reports sales and expenses in plain language, in whatever way they'd normally describe it. Every sale gets a real PDF receipt back instantly, a verified record on chain, and /profit gives a net profit summary anytime.</p>
           <span class="cmd">"Sold 2 bags of rice for 15000 naira"</span>
+          <span class="cmd">"Bought fuel for 3000 naira"</span>
+          <span class="cmd">"Sold a laptop for 250k naira to Musa"</span>
+          <span class="cmd">"Sold shoes for 50 dollars"</span>
+          <span class="cmd">"Bought stock for 20k cedis"</span>
         </div>
 
         <div class="about-grid">
@@ -480,7 +486,7 @@
 
     <div class="drawer-stats">
       <div class="drawer-stat"><div class="val" id="drawerVolume" style="font-size:14px;">0</div><div class="lbl">Total volume</div></div>
-      <div class="drawer-stat"><div class="val" id="drawerCount">0</div><div class="lbl">Receipts</div></div>
+      <div class="drawer-stat"><div class="val" id="drawerCount">0</div><div class="lbl" id="drawerCountLabel">Receipts</div></div>
       <div class="drawer-stat"><div class="val" id="drawerStreak">0</div><div class="lbl">Current streak</div></div>
       <div class="drawer-stat"><div class="val" id="drawerLongest">0</div><div class="lbl">Longest streak</div></div>
     </div>
@@ -546,6 +552,21 @@
 
   function displayName(id) {
     return merchantNames[id.toLowerCase()]?.businessName || null;
+  }
+
+  function matchesQuery(m, lowerQuery) {
+    const name = displayName(m.id);
+    return m.id.toLowerCase().includes(lowerQuery) || (name && name.toLowerCase().includes(lowerQuery));
+  }
+
+  /// Filters the full merchantList by business name or Credora ID (either matches).
+  /// Used both for live filtering the Merchants table as you type, and for the Enter
+  /// key's "jump straight to a single match" behavior.
+  function searchMerchants(query) {
+    const q = query.trim();
+    if (!q) return merchantList;
+    const lower = q.toLowerCase();
+    return merchantList.filter((m) => matchesQuery(m, lower));
   }
 
   // Business names, item descriptions, and buyer names are all self-reported by
@@ -741,10 +762,14 @@
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function renderTable(merchants) {
+  function renderTable(merchants, emptyMessage) {
     const rows = $("merchantRows");
     rows.innerHTML = "";
-    $("emptyState").style.display = merchants.length ? "none" : "block";
+    const emptyEl = $("emptyState");
+    emptyEl.style.display = merchants.length ? "none" : "block";
+    if (!merchants.length) {
+      emptyEl.textContent = emptyMessage || "No merchants have recorded a sale on this contract yet.";
+    }
 
     for (const m of merchants) {
       const tierName = TIER_NAMES[Number(m.profile.tier)];
@@ -852,6 +877,8 @@
 
     $("drawerVolume").textContent = formatMerchantVolume(id);
     $("drawerCount").textContent = profile.receiptCount.toString();
+    $("drawerCountLabel").textContent =
+      profile.confirmedCount > 0n ? `Receipts (${profile.confirmedCount} buyer-confirmed)` : "Receipts";
     $("drawerStreak").textContent = profile.currentStreakDays.toString();
     $("drawerLongest").textContent = profile.longestStreakDays.toString();
 
@@ -938,7 +965,7 @@
         return `
           <div class="receipt-row">
             <div class="info">
-              <div class="item">${escapeHtml(r.item || "Sale")}</div>
+              <div class="item">${escapeHtml(r.item || "Sale")}${r.buyerConfirmed ? ' <span class="confirmed-badge">✓ buyer confirmed</span>' : ""}</div>
               <div class="meta">#${escapeHtml(r.receiptId)} · ${date}</div>
             </div>
             <div style="display:flex; align-items:center;">
@@ -953,7 +980,32 @@
 
   $("closeDrawer").addEventListener("click", () => $("overlay").classList.remove("open"));
   $("overlay").addEventListener("click", (e) => { if (e.target.id === "overlay") $("overlay").classList.remove("open"); });
-  $("searchInput").addEventListener("keydown", (e) => { if (e.key === "Enter") openDrawer($("searchInput").value); });
+  // Live filter the Merchants table as you type, by business name or Credora ID.
+  $("searchInput").addEventListener("input", () => {
+    const q = $("searchInput").value;
+    const results = searchMerchants(q);
+    renderTable(results, q.trim() ? `No merchants match "${q.trim()}".` : undefined);
+  });
+
+  // Enter jumps straight to a merchant: a full Credora ID goes directly to its
+  // drawer, a name (or partial ID) that resolves to exactly one match does too,
+  // otherwise it just leaves the filtered Merchants table showing.
+  $("searchInput").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const q = $("searchInput").value.trim();
+    if (/^0x[0-9a-fA-F]{64}$/.test(q)) {
+      openDrawer(q);
+      return;
+    }
+    const results = searchMerchants(q);
+    if (results.length === 1) {
+      openDrawer(results[0].id);
+    } else if (results.length > 1) {
+      switchView("merchants");
+    } else if (q) {
+      setStatus(`No merchant found matching "${q}".`, "error");
+    }
+  });
   // Network hiccups against a public RPC are common and usually transient — retry a
   // couple of times with backoff before giving up and asking the person to retry
   // manually, rather than stranding them on a dead error screen after one blip.

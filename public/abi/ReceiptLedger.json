@@ -38,6 +38,16 @@
   },
   {
     "inputs": [],
+    "name": "AlreadyConfirmed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BuyerHashMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "ECDSAInvalidSignature",
     "type": "error"
   },
@@ -86,6 +96,11 @@
   {
     "inputs": [],
     "name": "InvalidSignature",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ReceiptDoesNotExist",
     "type": "error"
   },
   {
@@ -191,6 +206,37 @@
       }
     ],
     "name": "Paused",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint64",
+        "name": "receiptId",
+        "type": "uint64"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "merchantHash",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "buyerHash",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "timestamp",
+        "type": "uint64"
+      }
+    ],
+    "name": "ReceiptConfirmed",
     "type": "event"
   },
   {
@@ -481,6 +527,24 @@
   {
     "inputs": [
       {
+        "internalType": "uint64",
+        "name": "receiptId",
+        "type": "uint64"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "buyerHash",
+        "type": "bytes32"
+      }
+    ],
+    "name": "confirmReceipt",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "bytes32",
         "name": "merchantHash",
         "type": "bytes32"
@@ -580,6 +644,11 @@
           {
             "internalType": "uint32",
             "name": "longestStreakDays",
+            "type": "uint32"
+          },
+          {
+            "internalType": "uint32",
+            "name": "confirmedCount",
             "type": "uint32"
           },
           {
@@ -809,6 +878,11 @@
         "type": "uint32"
       },
       {
+        "internalType": "uint32",
+        "name": "confirmedCount",
+        "type": "uint32"
+      },
+      {
         "internalType": "enum ReceiptLedger.Tier",
         "name": "tier",
         "type": "uint8"
@@ -870,6 +944,44 @@
     "type": "function"
   },
   {
+    "inputs": [
+      {
+        "internalType": "uint64",
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "name": "receiptBuyerHash",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint64",
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "name": "receiptConfirmed",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [],
     "name": "receiptCounter",
     "outputs": [
@@ -877,6 +989,25 @@
         "internalType": "uint64",
         "name": "",
         "type": "uint64"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint64",
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "name": "receiptMerchantHash",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
       }
     ],
     "stateMutability": "view",

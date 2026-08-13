@@ -1,10 +1,10 @@
 {
-  "address": "0x99ABa1C9a9B880a2d17f658B7Dde989A071426Db",
+  "address": "0x2a588b7B44F13740Fe07eE4bC0A608E60a2e78e9",
   "admin": "0x36F4d1dBf1ba36D0c6c54c2b1F2b3F29E9675337",
   "agent": "0x36F4d1dBf1ba36D0c6c54c2b1F2b3F29E9675337",
   "network": "botchainTestnet",
   "chainId": "968",
-  "txHash": "0xf4bd4fbca85d8a92a4209ca1c2a0f6fb97832db9a263d0e8d60eabe1970c6b02",
-  "deployedAtBlock": 19710291,
-  "deployedAt": "2026-08-13T10:46:05.430Z"
+  "txHash": "0x7a03a84d52fc974ff348bd4e3a6134a47b1446cdf472a6221c4229c15f0b7f95",
+  "deployedAtBlock": 19761843,
+  "deployedAt": "2026-08-13T21:30:31.675Z"
 }

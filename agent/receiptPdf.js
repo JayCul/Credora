@@ -35,6 +35,7 @@ function generateReceiptPdf({
   tier,
   creditScore,
   standingLabel,
+  buyerConfirmed,
 }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: "A5", margin: 0 });
@@ -66,6 +67,14 @@ function generateReceiptPdf({
       const badgeW = doc.widthOfString(label) + 20;
       doc.roundedRect(PAD, y, badgeW, 18, 9).fill(TIER_BG[tier] || TIER_BG.Unrated);
       doc.fillColor(TIER_FG[tier] || TIER_FG.Unrated).text(label, PAD + 10, y + 5);
+
+      if (buyerConfirmed) {
+        const confirmLabel = "BUYER CONFIRMED";
+        const confirmX = PAD + badgeW + 8;
+        const confirmW = doc.widthOfString(confirmLabel) + 20;
+        doc.roundedRect(confirmX, y, confirmW, 18, 9).fill(COLORS.brandTint);
+        doc.fillColor(COLORS.brandDark).text(confirmLabel, confirmX + 10, y + 5);
+      }
       y += 30;
     }
 
