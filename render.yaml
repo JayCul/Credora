@@ -5,9 +5,16 @@
 # storage of any kind, disk or Key Value are both wiped on every restart, not just
 # on deploys. That means auth_info_baileys/ (the WhatsApp session) and data/ (local
 # business names, item descriptions, expenses) do not survive a restart. On-chain
-# sales data is unaffected either way, it lives on BOT Chain, not on Render. See the
-# README's "Deploying to Render" section for what this setup does and doesn't solve,
-# and for the (optional) external keep-alive ping that stops the free tier idling out.
+# sales data is unaffected either way, it lives on BOT Chain, not on Render.
+#
+# ALSO: these are two separate services with two separate filesystems, so data/ on
+# one is invisible to the other even while both are running, not just across a
+# restart. The dashboard's business names and per-merchant receipt list (item,
+# buyer name, PDF) will stay blank here, since only the agent ever writes to its
+# own data/. Tier, credit score, streak, volume, and confirmedCount are unaffected,
+# those come straight from on-chain events read client-side, no local store
+# involved. See the README's "Deploying to Render" section for the full breakdown,
+# and .github/workflows/keep-alive.yml for what stops the free tier idling out.
 
 services:
   - type: web
