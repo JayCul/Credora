@@ -39,6 +39,7 @@ class LocalStore {
     this.merchantsFile = path.join(this.dir, "merchants.json");
     this.receiptsFile = path.join(this.dir, "receipts.json");
     this.expensesFile = path.join(this.dir, "expenses.json");
+    this.pendingFile = path.join(this.dir, "pending.json");
   }
 
   // ── Merchants ──────────────────────────────────────────────────────────
@@ -103,6 +104,48 @@ class LocalStore {
 
   allExpenses() {
     return readJson(this.expensesFile, {});
+  }
+
+  // ── Pending buyer-confirmation state ──────────────────────────────────────
+  // A merchant waiting to be asked for a buyer's number, or a buyer waiting to be
+  // asked YES/NO, used to live only in an in-memory Map. A process restart (a
+  // redeploy, a crash, Render's own free-tier maintenance) wiped it silently —
+  // and worse than just losing the sale, a buyer's stray "yes" landing with no
+  // memory of ever having been asked anything fell straight through to the
+  // onboarding gate and got treated as a brand-new merchant signup. Persisting
+  // this means a restart can delay a confirmation, not corrupt one.
+  savePendingBuyerRequest(merchantJid, data) {
+    const all = readJson(this.pendingFile, {});
+    all.buyerRequests = all.buyerRequests || {};
+    all.buyerRequests[merchantJid] = data;
+    writeJsonAtomic(this.pendingFile, all);
+  }
+
+  deletePendingBuyerRequest(merchantJid) {
+    const all = readJson(this.pendingFile, {});
+    if (all.buyerRequests) delete all.buyerRequests[merchantJid];
+    writeJsonAtomic(this.pendingFile, all);
+  }
+
+  allPendingBuyerRequests() {
+    return readJson(this.pendingFile, {}).buyerRequests || {};
+  }
+
+  savePendingBuyerConfirmation(buyerJid, data) {
+    const all = readJson(this.pendingFile, {});
+    all.buyerConfirmations = all.buyerConfirmations || {};
+    all.buyerConfirmations[buyerJid] = data;
+    writeJsonAtomic(this.pendingFile, all);
+  }
+
+  deletePendingBuyerConfirmation(buyerJid) {
+    const all = readJson(this.pendingFile, {});
+    if (all.buyerConfirmations) delete all.buyerConfirmations[buyerJid];
+    writeJsonAtomic(this.pendingFile, all);
+  }
+
+  allPendingBuyerConfirmations() {
+    return readJson(this.pendingFile, {}).buyerConfirmations || {};
   }
 }
 

@@ -41,6 +41,14 @@ const pendingCurrency = new Map(); // jid -> { parsed, expiresAt }
 const pendingBuyerRequest = new Map(); // merchantJid -> { record, expiresAt } — "want buyer confirmation?"
 const pendingBuyerConfirmation = new Map(); // buyerJid -> { merchantJid, merchant, record, buyerPhone, timer } — "please confirm"
 
+// Both of the above are also mirrored to disk (agent/store.js) as they're set and
+// cleared, so a restart can rehydrate them instead of silently dropping whoever was
+// mid-flow. Rehydration itself only ever needs to run once per real process
+// lifetime, not on every Baileys-level reconnect within that same process — those
+// reconnects reuse this same module scope, so the in-memory Maps are already
+// populated and re-running it would double up timers.
+let hasRehydratedPendingState = false;
+
 // Common ways people actually write a currency in chat, mapped to ISO codes. A raw
 // 3-letter code (any of them, not just ones listed here) is also accepted directly —
 // this table is for the words and symbols an ISO code alone wouldn't catch.
@@ -125,6 +133,23 @@ function formatAmount(amountMinor, currencyCode) {
   return `${currencyCode} ${(amountMinor / 100).toLocaleString()}`;
 }
 
+/// Factored out of handleMessage() so a rehydrated pending entry (reconstructed
+/// from disk after a restart, with no live incoming message to close over) can get
+/// the exact same reply() behavior — send text, track the outbound id so the bot's
+/// own message doesn't get mistaken for a fresh incoming one.
+function makeReplier(sock, jid) {
+  return async (body) => {
+    const sent = await sock.sendMessage(jid, { text: body });
+    if (sent?.key?.id) {
+      sentMessageIds.add(sent.key.id);
+      if (sentMessageIds.size > MAX_TRACKED_IDS) {
+        sentMessageIds.delete(sentMessageIds.values().next().value);
+      }
+    }
+    return sent;
+  };
+}
+
 async function startAgent() {
   const contractClient = new ContractClient();
   const store = new LocalStore(contractClient.network.name);
@@ -189,6 +214,12 @@ async function startAgent() {
     } else if (connection === "open") {
       agentStatus.connected = true;
       console.log("✅ WhatsApp connected — Credora agent is live.");
+      if (!hasRehydratedPendingState) {
+        hasRehydratedPendingState = true;
+        rehydratePendingState(sock, contractClient, store).catch((err) => {
+          console.error("Failed to rehydrate pending buyer-confirmation state:", err);
+        });
+      }
     }
   });
 
@@ -219,16 +250,7 @@ async function handleMessage(sock, contractClient, store, msg) {
   if (!rawText) return;
   let text = rawText.slice(0, MAX_MESSAGE_CHARS);
 
-  const reply = async (body) => {
-    const sent = await sock.sendMessage(jid, { text: body });
-    if (sent?.key?.id) {
-      sentMessageIds.add(sent.key.id);
-      if (sentMessageIds.size > MAX_TRACKED_IDS) {
-        sentMessageIds.delete(sentMessageIds.values().next().value);
-      }
-    }
-    return sent;
-  };
+  const reply = makeReplier(sock, jid);
 
   // ── Resolve a buyer's reply to a confirmation request FIRST, before anything
   //    else — including the onboarding gate, since a buyer may never have talked
@@ -266,6 +288,18 @@ async function handleMessage(sock, contractClient, store, msg) {
       } else {
         return;
       }
+    } else if (isConfirmation(text) || isCancellation(text)) {
+      // A bare yes/no from a number we've never registered is far more likely to be
+      // a stray reply to a buyer-confirmation request this process has no memory of
+      // (its pending state lost some other way than the normal persisted path,
+      // rare, but not impossible) than someone actually trying to sign up. Silently
+      // starting onboarding here is how a real incident happened: a buyer's "Yes"
+      // got treated as "hi", and their next message became a fabricated business
+      // name. Doing nothing is a better failure mode than inventing a merchant.
+      await reply(
+        "I don't have anything pending for this number right now. If you're trying to confirm a sale, ask the merchant to resend the confirmation request."
+      );
+      return;
     } else {
       pendingOnboarding.set(jid, { stashedText: isGreetingOrCommand(text) ? null : text });
       await reply(
@@ -335,6 +369,7 @@ async function handleMessage(sock, contractClient, store, msg) {
   const awaitingBuyerRequest = pendingBuyerRequest.get(jid);
   if (awaitingBuyerRequest) {
     pendingBuyerRequest.delete(jid);
+    store.deletePendingBuyerRequest(jid);
     await resolveBuyerRequest(sock, contractClient, store, jid, merchant, merchantHash, text, awaitingBuyerRequest, reply);
     return;
   }
@@ -494,8 +529,10 @@ function confirmationPrompt(verb, description, amountMinor, currencyCode, parsed
 /// actually touches the chain — asking whether the merchant can get their buyer to
 /// independently confirm it happened.
 async function offerBuyerConfirmation(ctx, record) {
-  const { jid, reply } = ctx;
-  pendingBuyerRequest.set(jid, { ctx, record, expiresAt: Date.now() + PENDING_TTL_MS });
+  const { jid, reply, merchantHash, merchant, store } = ctx;
+  const expiresAt = Date.now() + PENDING_TTL_MS;
+  pendingBuyerRequest.set(jid, { ctx, record, expiresAt });
+  store.savePendingBuyerRequest(jid, { merchantHash, merchant, record, expiresAt });
   await reply(
     "Want your buyer to confirm this sale for extra credibility? Reply with their WhatsApp number, including the country code, e.g. +2348012345678, or reply SKIP to record it now without confirmation."
   );
@@ -517,7 +554,9 @@ async function resolveBuyerRequest(sock, contractClient, store, merchantJid, mer
     await reply(
       "Please include the country code, starting with +, e.g. +2348012345678 for Nigeria. Reply again with the full number, or SKIP to record without confirmation."
     );
-    pendingBuyerRequest.set(merchantJid, { ctx: awaiting.ctx, record, expiresAt: Date.now() + PENDING_TTL_MS });
+    const expiresAt = Date.now() + PENDING_TTL_MS;
+    pendingBuyerRequest.set(merchantJid, { ctx: awaiting.ctx, record, expiresAt });
+    store.savePendingBuyerRequest(merchantJid, { merchantHash, merchant, record, expiresAt });
     return;
   }
 
@@ -533,7 +572,9 @@ async function resolveBuyerRequest(sock, contractClient, store, merchantJid, mer
     await reply(
       "That's your own number. I need the actual buyer's number for this to mean anything, or reply SKIP to record without confirmation."
     );
-    pendingBuyerRequest.set(merchantJid, { ctx: awaiting.ctx, record, expiresAt: Date.now() + PENDING_TTL_MS });
+    const expiresAt = Date.now() + PENDING_TTL_MS;
+    pendingBuyerRequest.set(merchantJid, { ctx: awaiting.ctx, record, expiresAt });
+    store.savePendingBuyerRequest(merchantJid, { merchantHash, merchant, record, expiresAt });
     return;
   }
 
@@ -553,14 +594,17 @@ async function resolveBuyerRequest(sock, contractClient, store, merchantJid, mer
     return;
   }
 
+  const createdAt = Date.now();
   const timer = setTimeout(async () => {
     if (!pendingBuyerConfirmation.has(buyerJid)) return; // already resolved by a reply
     pendingBuyerConfirmation.delete(buyerJid);
+    store.deletePendingBuyerConfirmation(buyerJid);
     await reply("Your buyer hasn't responded yet, so I've recorded the sale without their confirmation. You can always ask again next time.");
     await submitReceipt(sock, merchantJid, reply, contractClient, store, merchantHash, merchant, record);
   }, BUYER_CONFIRM_TIMEOUT_MS);
 
   pendingBuyerConfirmation.set(buyerJid, { merchantJid, merchant, merchantHash, record, buyerPhone: trimmed, reply, timer });
+  store.savePendingBuyerConfirmation(buyerJid, { merchantJid, merchant, merchantHash, record, buyerPhone: trimmed, createdAt });
 
   await reply(
     `Sent a confirmation request to ${trimmed}. I'll record the sale once they respond, or automatically in 15 minutes if they don't.`
@@ -574,6 +618,7 @@ async function resolveBuyerConfirmation(sock, contractClient, store, buyerJid, t
   if (isConfirmation(text)) {
     clearTimeout(timer);
     pendingBuyerConfirmation.delete(buyerJid);
+    store.deletePendingBuyerConfirmation(buyerJid);
     await buyerReply("Thanks for confirming! I'll send you a copy of the receipt in a moment.");
     await submitReceipt(sock, merchantJid, merchantReply, contractClient, store, merchantHash, merchant, record, buyerPhone, [buyerJid]);
     return;
@@ -582,12 +627,88 @@ async function resolveBuyerConfirmation(sock, contractClient, store, buyerJid, t
   if (isCancellation(text) || /^no\b/i.test(text.trim())) {
     clearTimeout(timer);
     pendingBuyerConfirmation.delete(buyerJid);
+    store.deletePendingBuyerConfirmation(buyerJid);
     await buyerReply("Got it, thanks for letting us know. Nothing was recorded on this one.");
     await merchantReply("Your buyer said this sale wasn't right, so I didn't record it. Double check the details and try again if needed.");
     return;
   }
 
   await buyerReply('Sorry, I didn\'t understand. Reply YES to confirm this sale happened, or NO if it isn\'t right.');
+}
+
+/// Runs once, right after the first successful connection of this process's
+/// lifetime. Reconstructs pendingBuyerRequest and pendingBuyerConfirmation from
+/// whatever agent/store.js still has on disk, so a restart mid-flow delays a
+/// confirmation instead of losing it, or worse, having a stray "yes" mistaken for
+/// a new merchant signup. reply()/timer/ctx don't survive a restart since they're
+/// not serializable, they're rebuilt fresh here against the current sock.
+async function rehydratePendingState(sock, contractClient, store) {
+  const now = Date.now();
+  let restoredCount = 0;
+
+  const buyerRequests = store.allPendingBuyerRequests();
+  for (const [merchantJid, data] of Object.entries(buyerRequests)) {
+    if (now > data.expiresAt) {
+      store.deletePendingBuyerRequest(merchantJid);
+      continue;
+    }
+    const reply = makeReplier(sock, merchantJid);
+    const ctx = {
+      sock,
+      jid: merchantJid,
+      reply,
+      contractClient,
+      store,
+      merchantHash: data.merchantHash,
+      merchant: data.merchant,
+    };
+    pendingBuyerRequest.set(merchantJid, { ctx, record: data.record, expiresAt: data.expiresAt });
+    restoredCount++;
+  }
+
+  const buyerConfirmations = store.allPendingBuyerConfirmations();
+  for (const [buyerJid, data] of Object.entries(buyerConfirmations)) {
+    const reply = makeReplier(sock, data.merchantJid);
+    const elapsed = now - data.createdAt;
+
+    if (elapsed >= BUYER_CONFIRM_TIMEOUT_MS) {
+      // The original 15-minute timer would already have fired had the process not
+      // restarted — run the same fallback now instead of leaving this stranded
+      // forever with nothing left that will ever resolve it.
+      store.deletePendingBuyerConfirmation(buyerJid);
+      try {
+        await reply("Your buyer hasn't responded yet, so I've recorded the sale without their confirmation. You can always ask again next time.");
+        await submitReceipt(sock, data.merchantJid, reply, contractClient, store, data.merchantHash, data.merchant, data.record);
+      } catch (err) {
+        console.error(`Could not auto-record rehydrated pending confirmation for ${buyerJid}:`, err);
+      }
+      continue;
+    }
+
+    const remaining = BUYER_CONFIRM_TIMEOUT_MS - elapsed;
+    const timer = setTimeout(async () => {
+      if (!pendingBuyerConfirmation.has(buyerJid)) return;
+      pendingBuyerConfirmation.delete(buyerJid);
+      store.deletePendingBuyerConfirmation(buyerJid);
+      await reply("Your buyer hasn't responded yet, so I've recorded the sale without their confirmation. You can always ask again next time.");
+      await submitReceipt(sock, data.merchantJid, reply, contractClient, store, data.merchantHash, data.merchant, data.record);
+    }, remaining);
+
+    pendingBuyerConfirmation.set(buyerJid, {
+      merchantJid: data.merchantJid,
+      merchant: data.merchant,
+      merchantHash: data.merchantHash,
+      record: data.record,
+      buyerPhone: data.buyerPhone,
+      reply,
+      timer,
+    });
+    restoredCount++;
+  }
+
+  if (restoredCount > 0) {
+    console.log(`Rehydrated ${restoredCount} pending buyer-confirmation state(s) from disk after restart.`);
+  }
 }
 
 async function submitReceipt(sock, jid, reply, contractClient, store, merchantHash, merchant, record, confirmedBuyerPhone, extraPdfRecipients = []) {
